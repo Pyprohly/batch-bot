@@ -8,6 +8,8 @@ from logging.handlers import RotatingFileHandler
 import praw, prawcore
 from submission_recorder import record_submission
 
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
 logger = logging.getLogger(__name__)
 log_file = './logs/' + os.path.basename(__file__) + '.log'
 log_format = '%(asctime)s %(levelname)s %(funcName)s:%(lineno)d | %(message)s'
@@ -18,7 +20,7 @@ logging_rfh_config = {
     'backupCount': 8
 }
 
-os.chdir(os.path.dirname(os.path.abspath(__file__)))
+# Only enable logging if the log directory can be found
 logger.disabled = not os.path.isdir(os.path.dirname(log_file))
 if not logger.disabled:
     rotation_handler = RotatingFileHandler(**logging_rfh_config)
@@ -37,10 +39,11 @@ register = {
     'target_subreddits': ['Pyprohly_test1', 'Batch']
 }
 praw_config = {
-    'client_id': '[redacted]',
-    'client_secret': '[redacted]',
+    'site_name': 'BatchBot',
+    'client_id': None,
+    'client_secret': None,
     'username': 'BatchBot',
-    'password': '[redacted]',
+    'password': None,
     'user_agent': 'BatchBot by /u/Pyprohly'
 }
 
@@ -57,7 +60,7 @@ ${example}
 ^(*Beep-boop. I am a bot, and this action was performed automatically. If I have done something silly please contact*) [*^(the owner)*](https://www.reddit.com/message/compose?to=${owner}&subject=/u/${bot_name}%20feedback)^.
 '''
 response_subs = {
-    'owner': '%s' % register['author'],
+    'owner': register['author'],
     'coding_language': 'Batch file',
     'example': '''    This is normal text.
 
@@ -80,7 +83,7 @@ pattern = (r'^('
 response = Template(response)
 regex_pattern = re.compile(pattern, re.I | re.M)
 
-reddit = praw.Reddit(**praw_config)
+reddit = praw.Reddit(**{k: v for k, v in praw_config.items() if v is not None})
 me = reddit.user.me()
 subreddit = reddit.subreddit('+'.join(register['target_subreddits']))
 
@@ -90,7 +93,7 @@ def main():
     # A fail-safe in case the bot goes rouge and produces comments too quickly.
     # Set `reply_shear` to `False` to disable.
     reply_shear = True
-    reply_shear_value = 0
+    reply_shear_pitch = 0
     reply_shear_threshold = 4
     reply_shear_distance = 60 * 60 # i.e., hourly
     reply_shear_focus = time.time()
@@ -98,12 +101,12 @@ def main():
         try:
             for submission in subreddit.stream.submissions(pause_after=0):
                 if reply_shear:
-                    if reply_shear_value > 0:
+                    if reply_shear_pitch > 0:
                         if time.time() - reply_shear_focus > reply_shear_distance:
-                            reply_shear_value -= 1
+                            reply_shear_pitch -= 1
                             reply_shear_focus += reply_shear_distance
 
-                        if reply_shear_value > reply_shear_threshold:
+                        if reply_shear_pitch > reply_shear_threshold:
                             logger.error('Quitting: made too many responses over time')
                             raise SystemExit
                     else:
@@ -128,23 +131,23 @@ def main():
                     logger.info('Skip: no match: {}'.format(submission.permalink))
                     continue
 
-                # Quick check to see if it hasn't replied already
+                # Quick check to see if bot hasn't replied already
                 submission.comments.replace_more(limit=0)
                 if any(1 for comment in submission.comments.list() if comment.author == me):
                     logger.info('Skip: already replied to: {}'.format(submission.permalink))
                     continue
 
-                logger.info('Match: {}'.format(submission.permalink))
+                logger.info('Match (by /u/{}): {}'.format(submission.author.name, submission.permalink))
 
-                submission.reply(response.safe_substitute(redditor=submission.author.name,
-                                                          bot_name=me.name,
+                record_submission(submission)
+                submission.reply(response.safe_substitute(**{redditor: submission.author.name,
+                                                          bot_name: me.name,
                                                           **response_subs,
-                                                          **register))
+                                                          **register}))
 
                 logger.info('Respond: {}'.format(submission.permalink))
 
-                record_submission(submission)
-                reply_shear_value += 1
+                reply_shear_pitch += 1
 
         except praw.exceptions.APIException as e:
             resume_time = time.time()
@@ -191,4 +194,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
