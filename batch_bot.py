@@ -8,86 +8,10 @@ from logging.handlers import RotatingFileHandler
 import praw, prawcore
 from submission_recorder import record_submission
 
-os.chdir(os.path.dirname(os.path.abspath(__file__)))
-
-logger = logging.getLogger(__name__)
-log_file = './logs/' + os.path.basename(__file__) + '.log'
-log_format = '%(asctime)s %(levelname)s %(funcName)s:%(lineno)d | %(message)s'
-logging_rfh_config = {
-    'filename': log_file,
-    'encoding': 'utf-8',
-    'maxBytes': 5*1024*1024, # 5 megabytes
-    'backupCount': 8
-}
-
-# Only enable logging if the log directory can be found
-logger.disabled = not os.path.isdir(os.path.dirname(log_file))
-if not logger.disabled:
-    rotation_handler = RotatingFileHandler(**logging_rfh_config)
-    formatter = logging.Formatter(log_format)
-    rotation_handler.setFormatter(formatter)
-
-    logger.setLevel(logging.DEBUG)
-    logger.addHandler(rotation_handler)
-
-    logger.debug('Logging: ' + os.path.abspath(log_file))
-
-register = {
-    'author': 'Pyprohly',
-    'bot_name': 'BatchBot',
-    'description': 'Tells redditors in /r/Batch to wrap their code in a code block.',
-    'target_subreddits': ['Pyprohly_test1', 'Batch']
-}
-praw_config = {
-    'site_name': 'BatchBot',
-    'client_id': None,
-    'client_secret': None,
-    'username': 'BatchBot',
-    'password': None,
-    'user_agent': 'BatchBot by /u/Pyprohly'
-}
-
-response = '''Hi ${redditor},
-
-It looks like your ${coding_language} code isn’t wrapped in a code block. To format code correctly on **new.reddit.com**, highlight your code and select *Code Block* in the editing toolbar.
-
-If you’re on **old.reddit.com**, separate the code from your text with a blank line and precede each line of code with **4 spaces** or a **tab**. E.g.,
-
-${example}
-
----
-
-^(*Beep-boop. I am a bot, and this action was performed automatically. If I have done something silly please contact*) [*^(the owner)*](https://www.reddit.com/message/compose?to=${owner}&subject=/u/${bot_name}%20feedback)^.
-'''
-response_subs = {
-    'owner': register['author'],
-    'coding_language': 'Batch file',
-    'example': '''    This is normal text.
-
-        @echo off
-        echo This is code!
-
-> This is normal text.
->
->     @echo off
->     echo This is code!'''
-}
-
-pattern = (r'^('
-           r'@echo off *'
-           r'''|if (\/i )?(not )?((exist|defined|errorlevel) )?[\"\'\.\w%!-]+ ?(==|EQU|NEQ|LSS|LEQ|GTR|GEQ) ?[\"\'\.\w%!-]+ ?\('''
-           r'|goto :?\w+'
-           r'|set (\/a |\/p )?[\"\w]+=[\"\w ]{0,18}'
-           r')$')
-
-response = Template(response)
-regex_pattern = re.compile(pattern, re.I | re.M)
-
-reddit = praw.Reddit(**{k: v for k, v in praw_config.items() if v is not None})
-me = reddit.user.me()
-subreddit = reddit.subreddit('+'.join(register['target_subreddits']))
-
 def main():
+    if reddit.read_only:
+        raise RuntimeError('The reddit instance is read-only')
+
     start_time = resume_time = time.time()
 
     # A fail-safe in case the bot goes rouge and produces comments too quickly.
@@ -120,7 +44,7 @@ def main():
                     logger.info('Skip: link submission: {}'.format(submission.permalink))
                     continue
 
-                matches = regex_pattern.search(submission.selftext)
+                matches = regexp.search(submission.selftext)
 
                 if submission.created_utc < resume_time:
                     msg = 'earlier item' + (' (with match)' if matches else '')
@@ -140,14 +64,28 @@ def main():
                 logger.info('Match (by /u/{}): {}'.format(submission.author.name, submission.permalink))
 
                 record_submission(submission)
-                submission.reply(response.safe_substitute(**{redditor: submission.author.name,
-                                                          bot_name: me.name,
-                                                          **response_subs,
-                                                          **register}))
+
+                response_subsitutions = {
+                    'reddit_url': reddit.config.reddit_url,
+                    'redditor': submission.author.name,
+                    'bot_name': me.name,
+                    **response_static_pieces,
+                    **register
+                }
+                response_subsitutions['signature'] = Template(response_fragments['signature']).substitute(response_subsitutions)
+
+                reply = submission.reply(response.substitute(**response_subsitutions))
 
                 logger.info('Respond: {}'.format(submission.permalink))
 
-                reply_shear_pitch += 1
+                response_subsitutions['reply_id'] = reply.id
+                response_subsitutions['signature'] = Template(response_fragments['signature']
+                        + ' ^| ' + response_fragments['deletion_request']).substitute(response_subsitutions)
+
+                reply.edit(response.substitute(**response_subsitutions))
+
+                if reply_shear:
+                    reply_shear_pitch += 1
 
         except praw.exceptions.APIException as e:
             resume_time = time.time()
@@ -188,9 +126,91 @@ def main():
 
                     logger.debug('Retrying: failed to fetch: {}'.format(submission.id))
 
-        except Exception as e:
+        except Exception:
             logger.error('Exception: unhandled exception:', exc_info=True)
             raise
+
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
+logger = logging.getLogger(__name__)
+log_file = './logs/' + os.path.basename(__file__) + '.log'
+log_format = '%(asctime)s %(levelname)s %(funcName)s:%(lineno)d | %(message)s'
+logging_rfh_config = {
+    'filename': log_file,
+    'encoding': 'utf-8',
+    'maxBytes': 5*1024*1024, # i.e., 5 megabytes
+    'backupCount': 8
+}
+
+# Only enable logging if the log directory can be found
+logger.disabled = not os.path.isdir(os.path.dirname(log_file))
+if not logger.disabled:
+    rotation_handler = RotatingFileHandler(**logging_rfh_config)
+    formatter = logging.Formatter(log_format)
+    rotation_handler.setFormatter(formatter)
+
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(rotation_handler)
+
+    logger.debug('Logging ({}): {}'.format(__name__, os.path.abspath(log_file)))
+
+register = {
+    'author': 'Pyprohly',
+    'bot_name': 'BatchBot',
+    'description': 'Tells redditors in /r/Batch to wrap their code in a code block.',
+    'target_subreddits': ['Pyprohly_test1', 'Batch']
+}
+praw_config = {
+    'site_name': 'BatchBot',
+    'client_id': None,
+    'client_secret': None,
+    'username': 'BatchBot',
+    'password': None,
+    'user_agent': 'BatchBot by /u/Pyprohly'
+}
+
+response = '''Hi ${redditor},
+
+It looks like your ${coding_language} code isn’t wrapped in a code block. To format code correctly on **new.reddit.com**, highlight your code and select *Code Block* in the editing toolbar.
+
+If you’re on **old.reddit.com**, separate the code from your text with a blank line and precede each line of code with **4 spaces** or a **tab**. E.g.,
+
+${example}
+
+---
+
+${signature}
+'''
+response_static_pieces = {
+    'coding_language': 'Batch file',
+    'example': '''    This is normal text.
+
+        @echo off
+        echo This is code!
+
+> This is normal text.
+>
+>     @echo off
+>     echo This is code!'''
+}
+response_fragments = {
+    'signature': '^(*Beep-boop. I am a bot! If I have done something silly please contact*) [*^(the owner)*](${reddit_url}/message/compose?to=${author}&subject=/u/${bot_name}%20feedback)^.',
+    'deletion_request': '[*^(Delete)*](${reddit_url}/message/compose?to=${bot_name}&subject=!delete%20${reply_id}&message=None)'
+}
+
+pattern = (r'^('
+           r'@echo off *'
+           r'''|if (\/i )?(not )?((exist|defined|errorlevel) )?[\"\'\.\w%!-]+ ?(==|EQU|NEQ|LSS|LEQ|GTR|GEQ) ?[\"\'\.\w%!-]+ ?\('''
+           r'|goto :?\w+'
+           r'|set (\/a |\/p )?[\"\w]+=[\"\w ]{0,36}'
+           r')$')
+
+response = Template(response)
+regexp = re.compile(pattern, re.I | re.M)
+
+reddit = praw.Reddit(**{k: v for k, v in praw_config.items() if v is not None})
+me = reddit.user.me()
+subreddit = reddit.subreddit('+'.join(register['target_subreddits']))
 
 if __name__ == '__main__':
     main()
