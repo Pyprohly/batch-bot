@@ -35,16 +35,22 @@ def main():
                 comment = reddit.comment(comment_id)
 
                 try:
-                    comment._fetch()
+                    comment.refresh()
                 except praw.exceptions.PRAWException as e:
                     logger.info('Not found: comment id: {}'.format(comment_id))
                     continue
-                else:
-                    if comment.author == me:
-                        comment.delete()
-                        logger.info('Success: delete: {}'.format(comment.permalink))
-                    else:
-                        logger.info('Not owned: {}'.format(comment.permalink))
+
+                if comment.author != me:
+                    logger.info('Not owned: {}'.format(comment.permalink))
+                    continue
+
+                if comment.replies.list():
+                    logger.info("Don't delete: there are child replies: {}".format(comment.permalink))
+                    continue
+
+                comment.delete()
+
+                logger.info('Success: delete: {}'.format(comment.permalink))
 
         except praw.exceptions.APIException as e:
             resume_time = time.time()

@@ -171,7 +171,7 @@ praw_config = {
 
 response = '''Hi ${redditor},
 
-It looks like your ${coding_language} code isn’t wrapped in a code block. To format code correctly on **new.reddit.com**, highlight your code and select *Code Block* in the editing toolbar.
+It looks like your ${coding_language} code isn’t wrapped in a code block and some characters may have been stripped. To format code correctly on **new.reddit.com**, highlight your code and select *Code Block* in the editing toolbar.
 
 If you’re on **old.reddit.com**, separate the code from your text with a blank line and precede each line of code with **4 spaces** or a **tab**. E.g.,
 
@@ -191,11 +191,12 @@ response_static_pieces = {
 > This is normal text.
 >
 >     @echo off
->     echo This is code!'''
+>     echo This is code!''',
+    'deletion_message': 'The comment will not be removed if there are any replies on it.'.replace(' ', '%20')
 }
 response_fragments = {
     'signature': '^(*Beep-boop. I am a bot! If I have done something silly please contact*) [*^(the owner)*](${reddit_url}/message/compose?to=${author}&subject=/u/${bot_name}%20feedback)^.',
-    'deletion_request': '[*^(Delete)*](${reddit_url}/message/compose?to=${bot_name}&subject=!delete%20${reply_id}&message=None)'
+    'deletion_request': '[*^(Delete)*](${reddit_url}/message/compose?to=${bot_name}&subject=!delete%20${reply_id}&message=${deletion_message})'
 }
 
 pattern = (r'^('
