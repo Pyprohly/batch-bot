@@ -1,217 +1,172 @@
+#!/usr/bin/env python3
 
-import os
-import time
-import re
-from string import Template
-import logging
-from logging.handlers import RotatingFileHandler
-import praw, prawcore
-from submission_recorder import record_submission
-
-def main():
-    if reddit.read_only:
-        raise RuntimeError('The reddit instance is read-only')
-
-    start_time = resume_time = time.time()
-
-    # A fail-safe in case the bot goes rouge and produces comments too quickly.
-    # Set `reply_shear` to `False` to disable.
-    reply_shear = True
-    reply_shear_pitch = 0
-    reply_shear_threshold = 4
-    reply_shear_distance = 60 * 60 # i.e., hourly
-    reply_shear_focus = time.time()
-    while 1:
-        try:
-            for submission in subreddit.stream.submissions(pause_after=0):
-                if reply_shear:
-                    if reply_shear_pitch > 0:
-                        if time.time() - reply_shear_focus > reply_shear_distance:
-                            reply_shear_pitch -= 1
-                            reply_shear_focus += reply_shear_distance
-
-                        if reply_shear_pitch > reply_shear_threshold:
-                            logger.error('Quitting: made too many responses over time')
-                            raise SystemExit
-                    else:
-                        reply_shear_focus = time.time()
-
-                if submission is None:
-                    continue
-
-                # Make sure submission is not a link submission
-                if not submission.is_self:
-                    logger.info('Skip: link submission: {}'.format(submission.permalink))
-                    continue
-
-                matches = regexp.search(submission.selftext)
-
-                if submission.created_utc < resume_time:
-                    msg = 'earlier item' + (' (with match)' if matches else '')
-                    logger.info('Skip: ' + msg + ': {}'.format(submission.permalink))
-                    continue
-
-                if not matches:
-                    logger.info('Skip: no match: {}'.format(submission.permalink))
-                    continue
-
-                # Quick check to see if bot hasn't replied already
-                submission.comments.replace_more(limit=0)
-                if any(1 for comment in submission.comments.list() if comment.author == me):
-                    logger.info('Skip: already replied to: {}'.format(submission.permalink))
-                    continue
-
-                logger.info('Match (by /u/{}): {}'.format(submission.author.name, submission.permalink))
-
-                record_submission(submission)
-
-                response_subsitutions = {
-                    'reddit_url': reddit.config.reddit_url,
-                    'redditor': submission.author.name,
-                    'bot_name': me.name,
-                    **response_static_pieces,
-                    **register
-                }
-                response_subsitutions['signature'] = Template(response_fragments['signature']).substitute(response_subsitutions)
-
-                reply = submission.reply(response.substitute(**response_subsitutions))
-
-                logger.info('Respond: {}'.format(submission.permalink))
-
-                response_subsitutions['reply_id'] = reply.id
-                response_subsitutions['signature'] = Template(response_fragments['signature']
-                        + ' ^| ' + response_fragments['deletion_request']).substitute(response_subsitutions)
-
-                reply.edit(response.substitute(**response_subsitutions))
-
-                if reply_shear:
-                    reply_shear_pitch += 1
-
-        except praw.exceptions.APIException as e:
-            resume_time = time.time()
-
-            if e.error_type == 'RATELIMIT':
-                logger.error('Exception: ratelimit exceeded: {}'.format(e.message))
-
-                for _ in range(12*60):
-                    time.sleep(1)
-            else:
-                logger.warning('Exception: unhandled APIException:', exc_info=True)
-                raise
-
-        except prawcore.ResponseException as e:
-            resume_time = time.time()
-
-            logger.warning('Exception: ResponseException: {}'.format(e.response))
-
-            for _ in range(5*60):
-                time.sleep(1)
-
-        except prawcore.RequestException as e:
-            resume_time = time.time()
-
-            logger.warning('Exception: RequestException: {}'.format(e.original_exception))
-
-            for i in range(3):
-                for _ in range(5*60):
-                    time.sleep(1)
-
-                try:
-                    next(subreddit.new(limit=1))
-                    break
-                except prawcore.RequestException:
-                    if i >= 2:
-                        logger.warning('Quitting: failed to fetch: {}'.format(submission.id))
-                        raise
-
-                    logger.debug('Retrying: failed to fetch: {}'.format(submission.id))
-
-        except Exception:
-            logger.error('Exception: unhandled exception:', exc_info=True)
-            raise
-
-os.chdir(os.path.dirname(os.path.abspath(__file__)))
-
-logger = logging.getLogger(__name__)
-log_file = './logs/' + os.path.basename(__file__) + '.log'
-log_format = '%(asctime)s %(levelname)s %(funcName)s:%(lineno)d | %(message)s'
-logging_rfh_config = {
-    'filename': log_file,
-    'encoding': 'utf-8',
-    'maxBytes': 5*1024*1024, # i.e., 5 megabytes
-    'backupCount': 8
-}
-
-# Only enable logging if the log directory can be found
-logger.disabled = not os.path.isdir(os.path.dirname(log_file))
-if not logger.disabled:
-    rotation_handler = RotatingFileHandler(**logging_rfh_config)
-    formatter = logging.Formatter(log_format)
-    rotation_handler.setFormatter(formatter)
-
-    logger.setLevel(logging.DEBUG)
-    logger.addHandler(rotation_handler)
-
-    logger.debug('Logging ({}): {}'.format(__name__, os.path.abspath(log_file)))
-
-register = {
-    'author': 'Pyprohly',
-    'bot_name': 'BatchBot',
-    'description': 'Tells redditors in /r/Batch to wrap their code in a code block.',
-    'target_subreddits': ['Pyprohly_test1', 'Batch']
-}
-praw_config = {
-    'site_name': 'BatchBot',
-    'client_id': None,
-    'client_secret': None,
-    'username': 'BatchBot',
-    'password': None,
-    'user_agent': 'BatchBot by /u/Pyprohly'
-}
-
-response = '''Hi ${redditor},
-
-It looks like your ${coding_language} code isn’t wrapped in a code block and some characters may have been stripped. To format code correctly on **new.reddit.com**, highlight your code and select *Code Block* in the editing toolbar.
-
-If you’re on **old.reddit.com**, separate the code from your text with a blank line and precede each line of code with **4 spaces** or a **tab**. E.g.,
-
-${example}
-
----
-
-${signature}
-'''
-response_static_pieces = {
-    'coding_language': 'Batch file',
-    'example': '''    This is normal text.
-
-        @echo off
-        echo This is code!
-
-> This is normal text.
->
->     @echo off
->     echo This is code!''',
-    'deletion_message': 'The comment will not be removed if there are any replies on it.'.replace(' ', '%20')
-}
-response_fragments = {
-    'signature': '^(*Beep-boop. I am a bot! If I have done something silly please contact*) [*^(the owner)*](${reddit_url}/message/compose?to=${author}&subject=/u/${bot_name}%20feedback)^.',
-    'deletion_request': '[*^(Delete)*](${reddit_url}/message/compose?to=${bot_name}&subject=!delete%20${reply_id}&message=${deletion_message})'
-}
-
-pattern = (r'^('
-           r'@echo off *'
-           r'''|if (\/i )?(not )?((exist|defined|errorlevel) )?[\"\'\.\w%!-]+ ?(==|EQU|NEQ|LSS|LEQ|GTR|GEQ) ?[\"\'\.\w%!-]+ ?\('''
-           r'|goto :?\w+'
-           r'|set (\/a |\/p )?[\"\w]+=[\"\w ]{0,36}'
-           r')$')
-
-response = Template(response)
-regexp = re.compile(pattern, re.I | re.M)
-
-reddit = praw.Reddit(**{k: v for k, v in praw_config.items() if v is not None})
-me = reddit.user.me()
-subreddit = reddit.subreddit('+'.join(register['target_subreddits']))
+"""Tells redditors in /r/Batch to wrap their code in a code block."""
 
 if __name__ == '__main__':
-    main()
+	import os
+	import time
+	from collections import deque
+	import logging, logging.handlers
+	from pathlib import Path
+	import praw, prawcore
+
+	from types import SimpleNamespace
+
+	from regex_checks import MatchBank, match_control
+	from utils import submission_reply, record_submission_reply
+
+def main():
+	script_path = Path(__file__).resolve()
+	os.chdir(script_path.parent)
+
+	logger = logging.getLogger(__name__)
+	#logger.disabled = True
+	logger.setLevel(logging.INFO)
+	#logger.addHandler(logging.StreamHandler())
+
+	log_file = script_path.parent / 'log' / script_path.with_suffix('.log').name
+	if log_file.parent.is_dir():
+		log_format = '%(asctime)s %(levelname)s %(funcName)s:%(lineno)d | %(message)s'
+		rfh_config = {
+			'filename': log_file,
+			'encoding': 'utf-8',
+			'maxBytes': 5*1024*1024, # i.e., 5 megabytes
+			'backupCount': 8
+		}
+		rfh = logging.handlers.RotatingFileHandler(**rfh_config)
+		rfh.setFormatter(logging.Formatter(log_format))
+		logger.addHandler(rfh)
+
+		logger.info('Log ({}): {}'.format(logger.name, log_file.absolute()))
+
+	# A fail-safe stop mechanism in case the bot produces comments too quickly.
+	reply_shear = SimpleNamespace(**{
+		'enabled': True,
+		'pitch': 0,
+		'threshold': 4,
+		'distance': 60 * 60, # i.e., hourly
+		'focus': time.time()
+	})
+
+	reddit = praw.Reddit(**{k: v for k, v in praw_config.items() if v is not None})
+	if reddit.read_only:
+		raise RuntimeError('a read-write reddit instance is required')
+	me = reddit.user.me()
+	subreddit = reddit.subreddit('+'.join(register['target_subreddits']))
+
+	start_time = time.time()
+	__ = ['submission']
+	check_time = dict.fromkeys(__, start_time)
+	seen_deque = dict.fromkeys(__, deque(maxlen=100))
+	control_checkpoint_progression = lambda d: max(0, .5*(d - 10))
+
+	while 1:
+		try:
+			for submission in subreddit.stream.submissions(pause_after=None):
+				if submission is None:
+					continue
+
+				if submission.id in seen_deque['submission']:
+					logger.debug('Skip: seen item: {}'.format(submission.id))
+					continue
+				if submission.created_utc < check_time['submission']:
+					if submission.created_utc < start_time:
+						logger.debug('Skip: item was submitted before bot started: {}'.format(submission.id))
+					else:
+						logger.debug('Skip: item was seen or timestamp was supplanted: {}'.format(submission.id))
+					continue
+				check_time['submission'] += control_checkpoint_progression(submission.created_utc - check_time['submission'])
+				seen_deque['submission'].append(submission.id)
+
+				if not submission.is_self:
+					logger.debug('Skip: link submission: {}'.format(submission.permalink))
+					continue
+
+				# Rough check to see if bot hasn't replied already
+				submission.comments.replace_more(limit=0)
+				if any(1 for comment in submission.comments if comment.author == me):
+					logger.debug('Skip: already replied to: {}'.format(submission.permalink))
+					continue
+
+				b = match_control.check_all(submission.selftext)
+				if b == 0:
+					logger.debug('Skip: no match: {}'.format(submission.permalink))
+					continue
+
+				if reply_shear.enabled:
+					if reply_shear.pitch > 0:
+						time_time = time.time()
+						while time_time - reply_shear.focus > reply_shear.distance:
+							reply_shear.pitch -= 1
+							reply_shear.focus += reply_shear.distance
+
+						if reply_shear.pitch > reply_shear.threshold:
+							logger.error('Quit: bot made too many responses over time')
+							raise SystemExit(1)
+
+				logger.info('Match (by /u/{}): {}'.format(submission.author.name, submission.permalink))
+
+
+				reply = submission_reply(submission, b)
+				record_submission_reply(submission, reply, b)
+
+
+				if reply_shear.enabled:
+					if reply_shear.pitch == 0:
+						reply_shear.focus = time.time()
+					reply_shear.pitch += 1
+
+		except (praw.exceptions.PRAWException, prawcore.exceptions.PrawcoreException) as e:
+			if isinstance(e, praw.exceptions.APIException):
+				if e.error_type == 'RATELIMIT':
+					logger.info('Exception: ratelimit exceeded: {}'.format(e.message), exc_info=True)
+					time.sleep(11*60)
+				else:
+					logger.warning('Exception: unhandled PRAW APIException exception:', exc_info=True)
+
+			elif isinstance(e, prawcore.exceptions.ResponseException):
+				logger.info('Exception: ResponseException: {}'.format(e.response), exc_info=True)
+				time.sleep(5)
+
+			elif isinstance(e, prawcore.exceptions.RequestException):
+				logger.info('Exception: RequestException: {}'.format(e.original_exception), exc_info=True)
+				time.sleep(5)
+
+			else:
+				logger.warning('Exception: unhandled PRAW exception:', exc_info=True)
+
+		except Exception:
+			logger.error('Exception: unhandled exception:', exc_info=True)
+
+register = {
+	'name': 'BatchBot',
+	'author': 'Pyprohly',
+	'owner': 'Pyprohly',
+	'version': None,
+	'description': __doc__,
+	'license': 'MIT License',
+	'target_subreddits': ['Pyprohly_test3']
+}
+
+praw_config = {
+	'site_name': 'BatchBot',
+	'client_id': None,
+	'client_secret': None,
+	'username': 'BatchBot',
+	'password': None,
+	'user_agent': 'BatchBot by /u/Pyprohly'
+}
+
+try:
+	import config
+except ModuleNotFoundError:
+	pass
+else:
+	praw_config = config.praw_config
+	register['target_subreddits'] = config.subreddit_names
+
+if __name__ == '__main__':
+	try:
+		main()
+	except KeyboardInterrupt:
+		pass
