@@ -55,9 +55,8 @@ def main():
 	subreddit = reddit.subreddit('+'.join(register['target_subreddits']))
 
 	start_time = time.time()
-	__ = ['submission']
-	check_time = dict.fromkeys(__, start_time)
-	seen_deque = dict.fromkeys(__, deque(maxlen=100))
+	check_time = start_time
+	seen_deque = deque(maxlen=100)
 	control_checkpoint_progression = lambda d: max(0, .5*(d - 10))
 
 	while 1:
@@ -66,17 +65,17 @@ def main():
 				if submission is None:
 					continue
 
-				if submission.id in seen_deque['submission']:
+				if submission.id in seen_deque:
 					logger.debug('Skip: seen item: {}'.format(submission.id))
 					continue
-				if submission.created_utc < check_time['submission']:
+				if submission.created_utc < check_time:
 					if submission.created_utc < start_time:
 						logger.debug('Skip: item was submitted before bot started: {}'.format(submission.id))
 					else:
 						logger.debug('Skip: item was seen or timestamp was supplanted: {}'.format(submission.id))
 					continue
-				check_time['submission'] += control_checkpoint_progression(submission.created_utc - check_time['submission'])
-				seen_deque['submission'].append(submission.id)
+				check_time += control_checkpoint_progression(submission.created_utc - check_time)
+				seen_deque.append(submission.id)
 
 				if not submission.is_self:
 					logger.info('Skip: link submission: {}'.format(submission.permalink))
